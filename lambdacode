@@ -1,0 +1,64 @@
+import boto3
+import json
+import time
+
+def lambda_handler(event, context):
+    # Initialize the SSM client
+
+    object_key = event['Records'][0]['s3']['object']['key']
+
+    ssm_client = boto3.client('ssm', region_name='us-east-1')  # Replace with your region
+    
+    # EC2 instance ID
+    instance_id = "i-088a7bdf69cc8f356"  # Replace with your EC2 instance ID
+    
+    # Path to the script on the EC2 server
+    script_path = "/home/ubuntu/testScript.sh"  # Update with your script's actual path
+    
+    try:
+        # Send the command to execute the script
+        response = ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [f"bash {script_path} {object_key}"]},
+        )
+        
+        # Get the Command ID
+        command_id = response["Command"]["CommandId"]
+        
+        # Wait and retry logic for fetching command invocation
+        for attempt in range(10):  # Retry up to 10 times
+            time.sleep(2)  # Wait 2 seconds before each retry
+            
+            try:
+                # Fetch the command output
+                output = ssm_client.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id
+                )
+                
+                # Check the status of the command
+                if output["Status"] in ["Success", "Failed"]:
+                    # Return the output of the executed script
+                    return {
+                        "statusCode": 200,
+                        "body": json.dumps({
+                            "CommandId": command_id,
+                            "CommandOutput": output.get("StandardOutputContent", ""),
+                            "ExecutionStatus": output.get("Status", "")
+                        }),
+                    }
+            except ssm_client.exceptions.InvocationDoesNotExist:
+                # Invocation is not ready yet, retry
+                continue
+        
+        # If no valid response after retries, raise an error
+        raise Exception("Command did not complete in time")
+    
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": str(e)
+            }),
+        }
